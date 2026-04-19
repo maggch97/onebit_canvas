@@ -103,9 +103,10 @@ inline void cairo_surface_flush( cairo_surface_t* ) {}
 
 
 inline cairo_status_t cairo_surface_write_to_bmp( cairo_surface_t* surface, const std::filesystem::path& path,
-                                                  int dpiX = 0, int dpiY = 0 )
+                                                  int dpiX = 0, int dpiY = 0,
+                                                  bool flipVertically = false )
 {
-    return onebit::onebit_surface_write_to_bmp( surface, path, dpiX, dpiY )
+    return onebit::onebit_surface_write_to_bmp( surface, path, dpiX, dpiY, flipVertically )
                    ? CAIRO_STATUS_SUCCESS
                    : CAIRO_STATUS_WRITE_ERROR;
 }

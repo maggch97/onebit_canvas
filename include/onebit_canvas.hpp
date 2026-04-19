@@ -267,19 +267,21 @@ public:
         return FillPolygon( points.data(), points.size(), value );
     }
 
-    bool WriteBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0 ) const
+    bool WriteBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0,
+                   bool flipVertically = false ) const
     {
         std::ofstream stream( path, std::ios::binary );
 
         if( !stream.is_open() )
             return false;
 
-        const bool ok = WriteBmp( stream, dpiX, dpiY );
+        const bool ok = WriteBmp( stream, dpiX, dpiY, flipVertically );
         stream.close();
         return ok && stream.good();
     }
 
-    bool WriteBmp( std::ostream& stream, int dpiX = 0, int dpiY = 0 ) const
+    bool WriteBmp( std::ostream& stream, int dpiX = 0, int dpiY = 0,
+                   bool flipVertically = false ) const
     {
         if( m_width <= 0 || m_height <= 0 )
             return false;
@@ -323,8 +325,16 @@ public:
         };
 
         stream.write( palette, sizeof( palette ) );
-        stream.write( reinterpret_cast<const char*>( m_bits.data() ),
-                      static_cast<std::streamsize>( m_bits.size() ) );
+
+        for( int row = 0; row < m_height; ++row )
+        {
+            const int sourceRow = flipVertically ? ( m_height - 1 - row ) : row;
+            const std::uint8_t* rowData =
+                    m_bits.data() + static_cast<std::size_t>( sourceRow ) * static_cast<std::size_t>( m_stride );
+
+            stream.write( reinterpret_cast<const char*>( rowData ),
+                          static_cast<std::streamsize>( m_stride ) );
+        }
 
         return stream.good();
     }
@@ -408,9 +418,10 @@ public:
         m_canvas->Clear( effectiveValue() );
     }
 
-    bool WriteToBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0 ) const
+    bool WriteToBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0,
+                     bool flipVertically = false ) const
     {
-        return m_canvas->WriteBmp( path, dpiX, dpiY );
+        return m_canvas->WriteBmp( path, dpiX, dpiY, flipVertically );
     }
 
     const RasterStats& Stats() const noexcept
@@ -533,9 +544,10 @@ inline void onebit_paint( Context* context )
 
 
 inline bool onebit_surface_write_to_bmp( Surface* surface, const std::filesystem::path& path,
-                                         int dpiX = 0, int dpiY = 0 )
+                                         int dpiX = 0, int dpiY = 0,
+                                         bool flipVertically = false )
 {
-    return surface != nullptr && surface->canvas.WriteBmp( path, dpiX, dpiY );
+    return surface != nullptr && surface->canvas.WriteBmp( path, dpiX, dpiY, flipVertically );
 }
 
 
@@ -688,9 +700,10 @@ inline void surface_flush( surface_t* ) noexcept {}
 
 
 inline bool surface_write_to_bmp( surface_t* surface, const std::filesystem::path& path,
-                                  int dpiX = 0, int dpiY = 0 )
+                                  int dpiX = 0, int dpiY = 0,
+                                  bool flipVertically = false )
 {
-    return onebit_surface_write_to_bmp( surface, path, dpiX, dpiY );
+    return onebit_surface_write_to_bmp( surface, path, dpiX, dpiY, flipVertically );
 }
 
 

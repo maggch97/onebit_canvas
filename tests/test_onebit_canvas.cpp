@@ -125,6 +125,65 @@ void test_blank_bmp()
 }
 
 
+void test_bmp_vertical_flip()
+{
+    onebit::Canvas canvas( 8, 2 );
+    canvas.Clear( false );
+    canvas.SetPixel( 0, 0, true );
+    canvas.SetPixel( 7, 1, true );
+
+    const auto normalPath = std::filesystem::path( "onebit_canvas_normal.bmp" );
+    const auto flippedPath = std::filesystem::path( "onebit_canvas_flipped.bmp" );
+
+    expect_true( canvas.WriteBmp( normalPath, 300, 300, false ),
+                 "Normal BMP write should succeed" );
+    expect_true( canvas.WriteBmp( flippedPath, 300, 300, true ),
+                 "Flipped BMP write should succeed" );
+
+    auto read_file = []( const std::filesystem::path& path )
+    {
+        std::ifstream stream( path, std::ios::binary );
+        return std::vector<std::uint8_t>( ( std::istreambuf_iterator<char>( stream ) ),
+                                          std::istreambuf_iterator<char>() );
+    };
+
+    const auto normalBytes = read_file( normalPath );
+    const auto flippedBytes = read_file( flippedPath );
+
+    expect_true( normalBytes.size() >= 70, "Normal BMP should contain full row data" );
+    expect_true( flippedBytes.size() >= 70, "Flipped BMP should contain full row data" );
+
+    if( normalBytes.size() >= 70 )
+    {
+        const std::uint32_t rawHeight =
+                static_cast<std::uint32_t>( normalBytes[22] )
+                | ( static_cast<std::uint32_t>( normalBytes[23] ) << 8 )
+                | ( static_cast<std::uint32_t>( normalBytes[24] ) << 16 )
+                | ( static_cast<std::uint32_t>( normalBytes[25] ) << 24 );
+        expect_equal( static_cast<std::int32_t>( rawHeight ), -2,
+                      "Normal BMP height should stay negative for top-down storage" );
+        expect_equal( normalBytes[62], 0x80, "Normal BMP first row should contain the top row" );
+        expect_equal( normalBytes[66], 0x01, "Normal BMP second row should contain the bottom row" );
+    }
+
+    if( flippedBytes.size() >= 70 )
+    {
+        const std::uint32_t rawHeight =
+                static_cast<std::uint32_t>( flippedBytes[22] )
+                | ( static_cast<std::uint32_t>( flippedBytes[23] ) << 8 )
+                | ( static_cast<std::uint32_t>( flippedBytes[24] ) << 16 )
+                | ( static_cast<std::uint32_t>( flippedBytes[25] ) << 24 );
+        expect_equal( static_cast<std::int32_t>( rawHeight ), -2,
+                      "Flipped BMP height should stay negative for top-down storage" );
+        expect_equal( flippedBytes[62], 0x01, "Flipped BMP first row should contain the bottom row" );
+        expect_equal( flippedBytes[66], 0x80, "Flipped BMP second row should contain the top row" );
+    }
+
+    std::filesystem::remove( normalPath );
+    std::filesystem::remove( flippedPath );
+}
+
+
 void test_filled_rectangle()
 {
     onebit::Canvas canvas( 8, 6 );
@@ -308,6 +367,7 @@ void test_large_canvas_support()
 int main()
 {
     test_blank_bmp();
+    test_bmp_vertical_flip();
     test_filled_rectangle();
     test_triangle();
     test_concave_polygon();
