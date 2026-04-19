@@ -347,17 +347,17 @@ public:
 
     void SetValue( bool value ) noexcept
     {
-        m_currentValue = value;
+        m_sourceValue = value;
     }
 
     void SetClearMode( bool clear ) noexcept
     {
-        m_currentValue = !clear;
+        m_clearMode = clear;
     }
 
     bool CurrentValue() const noexcept
     {
-        return m_currentValue;
+        return effectiveValue();
     }
 
     void MoveTo( double x, double y )
@@ -389,7 +389,7 @@ public:
     void Fill()
     {
         if( m_path.size() >= 3 )
-            m_canvas->FillPolygon( m_path.data(), m_path.size(), m_currentValue );
+            m_canvas->FillPolygon( m_path.data(), m_path.size(), effectiveValue() );
 
         ClearPath();
     }
@@ -405,7 +405,7 @@ public:
 
     void Paint()
     {
-        m_canvas->Clear( m_currentValue );
+        m_canvas->Clear( effectiveValue() );
     }
 
     bool WriteToBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0 ) const
@@ -419,8 +419,14 @@ public:
     }
 
 private:
+    bool effectiveValue() const noexcept
+    {
+        return m_clearMode ? false : m_sourceValue;
+    }
+
     Canvas* m_canvas = nullptr;
-    bool m_currentValue = true;
+    bool m_sourceValue = true;
+    bool m_clearMode = false;
     bool m_closed = false;
     std::vector<PointD> m_path;
 };
@@ -505,6 +511,13 @@ inline void onebit_fill( Context* context )
 }
 
 
+inline void onebit_clear_path( Context* context )
+{
+    if( context )
+        context->ClearPath();
+}
+
+
 inline void onebit_rectangle( Context* context, double x, double y, double width, double height )
 {
     if( context )
@@ -524,5 +537,169 @@ inline bool onebit_surface_write_to_bmp( Surface* surface, const std::filesystem
 {
     return surface != nullptr && surface->canvas.WriteBmp( path, dpiX, dpiY );
 }
+
+
+namespace cairo_like
+{
+
+using surface_t = Surface;
+using context_t = Context;
+
+enum format_t
+{
+    FORMAT_MONO = 0
+};
+
+enum status_t
+{
+    STATUS_SUCCESS = 0,
+    STATUS_INVALID = 1
+};
+
+enum antialias_t
+{
+    ANTIALIAS_DEFAULT = 0,
+    ANTIALIAS_NONE = 1
+};
+
+enum operator_t
+{
+    OPERATOR_OVER = 0,
+    OPERATOR_CLEAR = 1
+};
+
+enum line_cap_t
+{
+    LINE_CAP_ROUND = 0
+};
+
+enum line_join_t
+{
+    LINE_JOIN_ROUND = 0
+};
+
+inline bool rgba_to_value( double r, double g, double b, double a ) noexcept
+{
+    if( a <= 0.0 )
+        return false;
+
+    const double luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luma < 0.5;
+}
+
+
+inline surface_t* image_surface_create( format_t, int width, int height )
+{
+    return onebit_image_surface_create( width, height );
+}
+
+
+inline void surface_destroy( surface_t* surface )
+{
+    onebit_surface_destroy( surface );
+}
+
+
+inline status_t surface_status( const surface_t* surface ) noexcept
+{
+    return surface != nullptr ? STATUS_SUCCESS : STATUS_INVALID;
+}
+
+
+inline context_t* create( surface_t* surface )
+{
+    return onebit_create( surface );
+}
+
+
+inline void destroy( context_t* context )
+{
+    onebit_destroy( context );
+}
+
+
+inline status_t status( const context_t* context ) noexcept
+{
+    return context != nullptr ? STATUS_SUCCESS : STATUS_INVALID;
+}
+
+
+inline void set_antialias( context_t*, antialias_t ) noexcept {}
+
+
+inline void set_source_rgba( context_t* context, double r, double g, double b, double a )
+{
+    onebit_set_value( context, rgba_to_value( r, g, b, a ) );
+}
+
+
+inline void set_operator( context_t* context, operator_t op )
+{
+    onebit_set_clear_mode( context, op == OPERATOR_CLEAR );
+}
+
+
+inline void paint( context_t* context )
+{
+    onebit_paint( context );
+}
+
+
+inline void set_line_cap( context_t*, line_cap_t ) noexcept {}
+
+
+inline void set_line_join( context_t*, line_join_t ) noexcept {}
+
+
+inline void set_line_width( context_t*, double ) noexcept {}
+
+
+inline void move_to( context_t* context, double x, double y )
+{
+    onebit_move_to( context, x, y );
+}
+
+
+inline void line_to( context_t* context, double x, double y )
+{
+    onebit_line_to( context, x, y );
+}
+
+
+inline void close_path( context_t* context )
+{
+    onebit_close_path( context );
+}
+
+
+inline void fill( context_t* context )
+{
+    onebit_fill( context );
+}
+
+
+inline void rectangle( context_t* context, double x, double y, double width, double height )
+{
+    onebit_rectangle( context, x, y, width, height );
+}
+
+
+inline void surface_flush( surface_t* ) noexcept {}
+
+
+inline bool surface_write_to_bmp( surface_t* surface, const std::filesystem::path& path,
+                                  int dpiX = 0, int dpiY = 0 )
+{
+    return onebit_surface_write_to_bmp( surface, path, dpiX, dpiY );
+}
+
+
+inline const RasterStats& stats( const context_t* context )
+{
+    static const RasterStats empty;
+    return context != nullptr ? context->Stats() : empty;
+}
+
+} // namespace cairo_like
 
 } // namespace onebit
