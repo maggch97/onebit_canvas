@@ -71,6 +71,13 @@ struct FixedLine
 };
 
 
+struct FixedBox
+{
+    FixedPoint p1;
+    FixedPoint p2;
+};
+
+
 struct EdgeInput
 {
     FixedLine line;
@@ -213,6 +220,252 @@ inline Quorem floored_muldivrem( fixed_t x, fixed_t a, fixed_t b ) noexcept
 #else
 #error "onebit_canvas_cairo_mono.hpp needs either __int128 or MSVC x64 _umul128/_udiv128 support"
 #endif
+
+
+inline fixed_t fixed_mul_div_floor( fixed_t a, fixed_t b, fixed_t c ) noexcept
+{
+    return floored_muldivrem( a, b, c ).quo;
+}
+
+
+inline fixed_t compute_intersection_y_for_x( const FixedPoint& p1, const FixedPoint& p2,
+                                             fixed_t x ) noexcept
+{
+    if( x == p1.x )
+        return p1.y;
+
+    if( x == p2.x )
+        return p2.y;
+
+    fixed_t y = p1.y;
+    const fixed_t dx = p2.x - p1.x;
+
+    if( dx != 0 )
+        y += fixed_mul_div_floor( x - p1.x, p2.y - p1.y, dx );
+
+    return y;
+}
+
+
+inline fixed_t compute_intersection_x_for_y( const FixedPoint& p1, const FixedPoint& p2,
+                                             fixed_t y ) noexcept
+{
+    if( y == p1.y )
+        return p1.x;
+
+    if( y == p2.y )
+        return p2.x;
+
+    fixed_t x = p1.x;
+    const fixed_t dy = p2.y - p1.y;
+
+    if( dy != 0 )
+        x += fixed_mul_div_floor( y - p1.y, p2.x - p1.x, dy );
+
+    return x;
+}
+
+
+class ClippedEdgeBuilder
+{
+public:
+    ClippedEdgeBuilder( int width, int height )
+    {
+        m_limit.p1 = FixedPoint{ 0, 0 };
+        m_limit.p2 = FixedPoint{ fixed_from_int( width ), fixed_from_int( height ) };
+    }
+
+    void Reserve( std::size_t edgeCount )
+    {
+        m_edges.reserve( edgeCount * 4 );
+    }
+
+    void AddPolygonEdge( FixedPoint p1, FixedPoint p2 ) noexcept
+    {
+        if( p1.y == p2.y )
+            return;
+
+        int dir = 1;
+
+        if( p1.y > p2.y )
+        {
+            std::swap( p1, p2 );
+            dir = -1;
+        }
+
+        if( p2.y <= m_limit.p1.y || p1.y >= m_limit.p2.y )
+            return;
+
+        AddClippedEdge( p1, p2, p1.y, p2.y, dir );
+    }
+
+    bool Empty() const noexcept { return m_edges.empty(); }
+    const std::vector<EdgeInput>& Edges() const noexcept { return m_edges; }
+    fixed_t MinX() const noexcept { return m_minX; }
+    fixed_t MinY() const noexcept { return m_minY; }
+    fixed_t MaxX() const noexcept { return m_maxX; }
+    fixed_t MaxY() const noexcept { return m_maxY; }
+
+private:
+    void AddEdge( const FixedPoint& p1, const FixedPoint& p2, fixed_t top, fixed_t bottom, int dir ) noexcept
+    {
+        if( top >= bottom )
+            return;
+
+        m_edges.push_back( EdgeInput{ FixedLine{ p1, p2 }, top, bottom, dir } );
+
+        m_minY = std::min( m_minY, top );
+        m_maxY = std::max( m_maxY, bottom );
+
+        fixed_t x = p1.x;
+
+        if( top != p1.y )
+            x = compute_intersection_x_for_y( p1, p2, top );
+
+        m_minX = std::min( m_minX, x );
+        m_maxX = std::max( m_maxX, x );
+
+        x = p2.x;
+
+        if( bottom != p2.y )
+            x = compute_intersection_x_for_y( p1, p2, bottom );
+
+        m_minX = std::min( m_minX, x );
+        m_maxX = std::max( m_maxX, x );
+    }
+
+    void AddClippedEdge( const FixedPoint& p1, const FixedPoint& p2, fixed_t top, fixed_t bottom,
+                         int dir ) noexcept
+    {
+        if( top >= m_limit.p2.y || bottom <= m_limit.p1.y )
+            return;
+
+        FixedPoint botLeft{ m_limit.p1.x, m_limit.p2.y };
+        FixedPoint topRight{ m_limit.p2.x, m_limit.p1.y };
+        fixed_t topY = std::max( top, m_limit.p1.y );
+        fixed_t botY = std::min( bottom, m_limit.p2.y );
+        const fixed_t pleft = std::min( p1.x, p2.x );
+        const fixed_t pright = std::max( p1.x, p2.x );
+
+        if( m_limit.p1.x <= pleft && pright <= m_limit.p2.x )
+        {
+            AddEdge( p1, p2, topY, botY, dir );
+            return;
+        }
+
+        if( pright <= m_limit.p1.x )
+        {
+            AddEdge( m_limit.p1, botLeft, topY, botY, dir );
+            return;
+        }
+
+        if( m_limit.p2.x <= pleft )
+        {
+            AddEdge( topRight, m_limit.p2, topY, botY, dir );
+            return;
+        }
+
+        fixed_t leftY;
+        fixed_t rightY;
+        const bool topLeftToBottomRight = ( p1.x <= p2.x ) == ( p1.y <= p2.y );
+
+        if( topLeftToBottomRight )
+        {
+            if( pleft >= m_limit.p1.x )
+            {
+                leftY = topY;
+            }
+            else
+            {
+                leftY = compute_intersection_y_for_x( p1, p2, m_limit.p1.x );
+
+                if( compute_intersection_x_for_y( p1, p2, leftY ) < m_limit.p1.x )
+                    leftY += 1;
+            }
+
+            leftY = std::min( leftY, botY );
+
+            if( topY < leftY )
+            {
+                AddEdge( m_limit.p1, botLeft, topY, leftY, dir );
+                topY = leftY;
+            }
+
+            if( pright <= m_limit.p2.x )
+            {
+                rightY = botY;
+            }
+            else
+            {
+                rightY = compute_intersection_y_for_x( p1, p2, m_limit.p2.x );
+
+                if( compute_intersection_x_for_y( p1, p2, rightY ) > m_limit.p2.x )
+                    rightY -= 1;
+            }
+
+            rightY = std::max( rightY, topY );
+
+            if( botY > rightY )
+            {
+                AddEdge( topRight, m_limit.p2, rightY, botY, dir );
+                botY = rightY;
+            }
+        }
+        else
+        {
+            if( pright <= m_limit.p2.x )
+            {
+                rightY = topY;
+            }
+            else
+            {
+                rightY = compute_intersection_y_for_x( p1, p2, m_limit.p2.x );
+
+                if( compute_intersection_x_for_y( p1, p2, rightY ) > m_limit.p2.x )
+                    rightY += 1;
+            }
+
+            rightY = std::min( rightY, botY );
+
+            if( topY < rightY )
+            {
+                AddEdge( topRight, m_limit.p2, topY, rightY, dir );
+                topY = rightY;
+            }
+
+            if( pleft >= m_limit.p1.x )
+            {
+                leftY = botY;
+            }
+            else
+            {
+                leftY = compute_intersection_y_for_x( p1, p2, m_limit.p1.x );
+
+                if( compute_intersection_x_for_y( p1, p2, leftY ) < m_limit.p1.x )
+                    leftY -= 1;
+            }
+
+            leftY = std::max( leftY, topY );
+
+            if( botY > leftY )
+            {
+                AddEdge( m_limit.p1, botLeft, leftY, botY, dir );
+                botY = leftY;
+            }
+        }
+
+        if( topY != botY )
+            AddEdge( p1, p2, topY, botY, dir );
+    }
+
+private:
+    FixedBox m_limit;
+    std::vector<EdgeInput> m_edges;
+    fixed_t m_minX = std::numeric_limits<fixed_t>::max();
+    fixed_t m_minY = std::numeric_limits<fixed_t>::max();
+    fixed_t m_maxX = std::numeric_limits<fixed_t>::min();
+    fixed_t m_maxY = std::numeric_limits<fixed_t>::min();
+};
 
 class MonoScanConverter
 {
@@ -601,11 +854,6 @@ bool RasterizePolygon( const PointD* points, std::size_t count, int width, int h
     std::vector<FixedPoint> fixedPoints;
     fixedPoints.reserve( count );
 
-    fixed_t minX = std::numeric_limits<fixed_t>::max();
-    fixed_t minY = std::numeric_limits<fixed_t>::max();
-    fixed_t maxX = std::numeric_limits<fixed_t>::min();
-    fixed_t maxY = std::numeric_limits<fixed_t>::min();
-
     for( std::size_t i = 0; i < count; ++i )
     {
         FixedPoint pt{
@@ -614,50 +862,33 @@ bool RasterizePolygon( const PointD* points, std::size_t count, int width, int h
         };
 
         fixedPoints.push_back( pt );
-        minX = std::min( minX, pt.x );
-        minY = std::min( minY, pt.y );
-        maxX = std::max( maxX, pt.x );
-        maxY = std::max( maxY, pt.y );
     }
 
-    const int xmin = std::max( 0, fixed_integer_floor( minX ) );
-    const int ymin = std::max( 0, fixed_integer_floor( minY ) );
-    const int xmax = std::min( width, fixed_integer_ceil( maxX ) );
-    const int ymax = std::min( height, fixed_integer_ceil( maxY ) );
+    // We clip polygon edges to the canvas box before scan conversion to match
+    // Cairo's fill semantics exactly at the image boundary. For our current
+    // Gerber-export use case we normally render the full board, so a simpler
+    // "rasterize first, discard out-of-bounds spans later" approach would
+    // often appear to work. We still keep the explicit edge clipping here
+    // because cropped/viewported renders hit the boundary rules, and Cairo
+    // parity at those edges is the behavior we want to preserve.
+    ClippedEdgeBuilder builder( width, height );
+    builder.Reserve( count );
+
+    for( std::size_t i = 0; i < count; ++i )
+        builder.AddPolygonEdge( fixedPoints[i], fixedPoints[( i + 1 ) % count] );
+
+    if( builder.Empty() )
+        return false;
+
+    const int xmin = std::max( 0, fixed_integer_floor( builder.MinX() ) );
+    const int ymin = std::max( 0, fixed_integer_floor( builder.MinY() ) );
+    const int xmax = std::min( width, fixed_integer_ceil( builder.MaxX() ) );
+    const int ymax = std::min( height, fixed_integer_ceil( builder.MaxY() ) );
 
     if( xmax <= xmin || ymax <= ymin )
         return false;
 
-    std::vector<EdgeInput> edges;
-    edges.reserve( count );
-
-    for( std::size_t i = 0; i < count; ++i )
-    {
-        FixedPoint p1 = fixedPoints[i];
-        FixedPoint p2 = fixedPoints[( i + 1 ) % count];
-
-        if( p1.y == p2.y )
-            continue;
-
-        int dir = 1;
-
-        if( p1.y > p2.y )
-        {
-            std::swap( p1, p2 );
-            dir = -1;
-        }
-
-        edges.push_back( EdgeInput{
-            FixedLine{ p1, p2 },
-            p1.y,
-            p2.y,
-            dir
-        } );
-    }
-
-    if( edges.empty() )
-        return false;
-
+    const auto& edges = builder.Edges();
     MonoScanConverter converter( xmin, ymin, xmax, ymax, edges.size() );
 
     for( const EdgeInput& edge : edges )
