@@ -3,6 +3,8 @@
 #include "onebit_canvas.hpp"
 
 #include <filesystem>
+#include <stdexcept>
+#include <string>
 
 using cairo_surface_t = onebit::Surface;
 using cairo_t = onebit::Context;
@@ -40,6 +42,21 @@ enum cairo_line_join_t
 {
     CAIRO_LINE_JOIN_ROUND = 0
 };
+
+
+inline void onebit_cairo_shim_throw_unsupported( const char* functionName )
+{
+    throw std::logic_error( std::string( functionName )
+                            + " is not implemented by onebit_canvas cairo shim" );
+}
+
+
+inline void onebit_cairo_shim_unsupported( const char* functionName )
+{
+    using handler_t = void ( * )( const char* );
+    volatile handler_t handler = onebit_cairo_shim_throw_unsupported;
+    handler( functionName );
+}
 
 
 inline cairo_surface_t* cairo_image_surface_create( cairo_format_t, int width, int height )
@@ -100,6 +117,26 @@ inline void cairo_set_line_join( cairo_t*, cairo_line_join_t ) {}
 
 
 inline void cairo_surface_flush( cairo_surface_t* ) {}
+
+
+inline unsigned char* cairo_image_surface_get_data( cairo_surface_t* )
+{
+    onebit_cairo_shim_unsupported( "cairo_image_surface_get_data" );
+    return nullptr;
+}
+
+
+inline int cairo_image_surface_get_stride( cairo_surface_t* )
+{
+    onebit_cairo_shim_unsupported( "cairo_image_surface_get_stride" );
+    return 0;
+}
+
+
+inline void cairo_surface_mark_dirty( cairo_surface_t* )
+{
+    onebit_cairo_shim_unsupported( "cairo_surface_mark_dirty" );
+}
 
 
 inline cairo_status_t cairo_surface_write_to_bmp( cairo_surface_t* surface, const std::filesystem::path& path,
@@ -164,6 +201,36 @@ inline void cairo_arc( cairo_t*, double, double, double, double, double ) {}
 
 
 inline void cairo_arc_negative( cairo_t*, double, double, double, double, double ) {}
+
+
+inline void cairo_save( cairo_t* )
+{
+    onebit_cairo_shim_unsupported( "cairo_save" );
+}
+
+
+inline void cairo_translate( cairo_t*, double, double )
+{
+    onebit_cairo_shim_unsupported( "cairo_translate" );
+}
+
+
+inline void cairo_scale( cairo_t*, double, double )
+{
+    onebit_cairo_shim_unsupported( "cairo_scale" );
+}
+
+
+inline void cairo_set_source_surface( cairo_t*, cairo_surface_t*, double, double )
+{
+    onebit_cairo_shim_unsupported( "cairo_set_source_surface" );
+}
+
+
+inline void cairo_restore( cairo_t* )
+{
+    onebit_cairo_shim_unsupported( "cairo_restore" );
+}
 
 
 inline const onebit::RasterStats& cairo_get_raster_stats( cairo_t* context )
