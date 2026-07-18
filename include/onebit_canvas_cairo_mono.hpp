@@ -266,11 +266,45 @@ inline fixed_t compute_intersection_x_for_y( const FixedPoint& p1, const FixedPo
 }
 
 
+struct ScanEdge
+{
+    ScanEdge* next = nullptr;
+    ScanEdge* prev = nullptr;
+    int height_left = 0;
+    int dir = 0;
+    bool vertical = false;
+    fixed_t dy = 0;
+    Quorem x;
+    Quorem dxdy;
+};
+
+
+/**
+ * Reusable scratch buffers for RasterizePolygon().
+ *
+ * Rasterizing one polygon needs five transient vectors (fixed-point vertices, clipped
+ * edges, scan edges, y-buckets and the span accumulator).  Allocating them per polygon
+ * dominates the cost of small polygons, so callers that rasterize many polygons pass one
+ * RasterScratch so the buffers' capacity is retained across calls.  Contents carried
+ * over from a previous polygon are never read: every element is (re)written before use.
+ */
+struct RasterScratch
+{
+    std::vector<FixedPoint>   fixedPoints;
+    std::vector<EdgeInput>    edges;
+    std::vector<ScanEdge>     scanEdges;
+    std::vector<ScanEdge*>    yBuckets;
+    std::vector<HalfOpenSpan> spans;
+};
+
+
 class ClippedEdgeBuilder
 {
 public:
-    ClippedEdgeBuilder( int width, int height )
+    ClippedEdgeBuilder( int width, int height, std::vector<EdgeInput>& aEdgeStorage ) :
+            m_edges( aEdgeStorage )
     {
+        m_edges.clear();
         m_limit.p1 = FixedPoint{ 0, 0 };
         m_limit.p2 = FixedPoint{ fixed_from_int( width ), fixed_from_int( height ) };
     }
@@ -460,7 +494,7 @@ private:
 
 private:
     FixedBox m_limit;
-    std::vector<EdgeInput> m_edges;
+    std::vector<EdgeInput>& m_edges;
     fixed_t m_minX = std::numeric_limits<fixed_t>::max();
     fixed_t m_minY = std::numeric_limits<fixed_t>::max();
     fixed_t m_maxX = std::numeric_limits<fixed_t>::min();
@@ -470,19 +504,29 @@ private:
 class MonoScanConverter
 {
 public:
-    MonoScanConverter( int xmin, int ymin, int xmax, int ymax, std::size_t edgeCapacity ) :
+    MonoScanConverter( int xmin, int ymin, int xmax, int ymax, std::size_t edgeCapacity,
+                       RasterScratch& aScratch ) :
             m_xmin( xmin ),
             m_xmax( xmax ),
             m_ymin( ymin ),
             m_ymax( ymax ),
-            m_edges( edgeCapacity )
+            m_edges( aScratch.scanEdges ),
+            m_yBuckets( aScratch.yBuckets ),
+            m_spans( aScratch.spans )
     {
+        // Carried-over contents are never read: AddEdge() fully initializes each ScanEdge
+        // slot and AddSpan() writes each span before Generate() reads it.
+        if( m_edges.size() < edgeCapacity )
+            m_edges.resize( edgeCapacity );
+
         const int bucketCount = ( m_ymax - m_ymin ) + 1;
         m_yBuckets.assign( static_cast<std::size_t>( bucketCount ), nullptr );
         m_yBuckets.back() = &m_bucketSentinel;
 
         const int maxNumSpans = std::max( 0, m_xmax - m_xmin + 1 );
-        m_spans.resize( static_cast<std::size_t>( maxNumSpans ) );
+
+        if( m_spans.size() < static_cast<std::size_t>( maxNumSpans ) )
+            m_spans.resize( static_cast<std::size_t>( maxNumSpans ) );
 
         m_head.vertical = true;
         m_head.height_left = std::numeric_limits<int>::max();
@@ -592,18 +636,6 @@ public:
     }
 
 private:
-    struct ScanEdge
-    {
-        ScanEdge* next = nullptr;
-        ScanEdge* prev = nullptr;
-        int height_left = 0;
-        int dir = 0;
-        bool vertical = false;
-        fixed_t dy = 0;
-        Quorem x;
-        Quorem dxdy;
-    };
-
     void InsertEdgeIntoBucket( ScanEdge* edge, int y ) noexcept
     {
         ScanEdge*& bucket = m_yBuckets[static_cast<std::size_t>( y - m_ymin )];
@@ -833,25 +865,26 @@ private:
     int m_ymin = 0;
     int m_ymax = 0;
     bool m_isVertical = true;
-    std::vector<ScanEdge> m_edges;
+    std::vector<ScanEdge>& m_edges;
     std::size_t m_edgeCount = 0;
-    std::vector<ScanEdge*> m_yBuckets;
+    std::vector<ScanEdge*>& m_yBuckets;
     ScanEdge m_bucketSentinel;
     ScanEdge m_head;
     ScanEdge m_tail;
-    std::vector<HalfOpenSpan> m_spans;
+    std::vector<HalfOpenSpan>& m_spans;
     int m_numSpans = 0;
 };
 
 
 template <typename EmitSpan>
 bool RasterizePolygon( const PointD* points, std::size_t count, int width, int height,
-                       EmitSpan&& emitSpan )
+                       EmitSpan&& emitSpan, RasterScratch& scratch )
 {
     if( points == nullptr || count < 3 || width <= 0 || height <= 0 )
         return false;
 
-    std::vector<FixedPoint> fixedPoints;
+    std::vector<FixedPoint>& fixedPoints = scratch.fixedPoints;
+    fixedPoints.clear();
     fixedPoints.reserve( count );
 
     for( std::size_t i = 0; i < count; ++i )
@@ -871,7 +904,7 @@ bool RasterizePolygon( const PointD* points, std::size_t count, int width, int h
     // often appear to work. We still keep the explicit edge clipping here
     // because cropped/viewported renders hit the boundary rules, and Cairo
     // parity at those edges is the behavior we want to preserve.
-    ClippedEdgeBuilder builder( width, height );
+    ClippedEdgeBuilder builder( width, height, scratch.edges );
     builder.Reserve( count );
 
     for( std::size_t i = 0; i < count; ++i )
@@ -889,12 +922,22 @@ bool RasterizePolygon( const PointD* points, std::size_t count, int width, int h
         return false;
 
     const auto& edges = builder.Edges();
-    MonoScanConverter converter( xmin, ymin, xmax, ymax, edges.size() );
+    MonoScanConverter converter( xmin, ymin, xmax, ymax, edges.size(), scratch );
 
     for( const EdgeInput& edge : edges )
         converter.AddEdge( edge );
 
     return converter.Generate( std::forward<EmitSpan>( emitSpan ), ~0u );
+}
+
+
+template <typename EmitSpan>
+bool RasterizePolygon( const PointD* points, std::size_t count, int width, int height,
+                       EmitSpan&& emitSpan )
+{
+    RasterScratch scratch;
+    return RasterizePolygon( points, count, width, height, std::forward<EmitSpan>( emitSpan ),
+                             scratch );
 }
 
 } // namespace detail::cairo_mono

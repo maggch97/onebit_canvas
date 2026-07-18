@@ -258,7 +258,8 @@ public:
                 [this, value]( int y, int x0, int x1 )
                 {
                     FillSpan1bpp( y, x0, x1, value );
-                } );
+                },
+                m_rasterScratch );
     }
 
     template <typename Container>
@@ -326,14 +327,23 @@ public:
 
         stream.write( palette, sizeof( palette ) );
 
-        for( int row = 0; row < m_height; ++row )
+        if( !flipVertically )
         {
-            const int sourceRow = flipVertically ? ( m_height - 1 - row ) : row;
-            const std::uint8_t* rowData =
-                    m_bits.data() + static_cast<std::size_t>( sourceRow ) * static_cast<std::size_t>( m_stride );
+            // Top-down rows are stored contiguously in file order; write them in one call.
+            stream.write( reinterpret_cast<const char*>( m_bits.data() ),
+                          static_cast<std::streamsize>( imageSize ) );
+        }
+        else
+        {
+            for( int row = 0; row < m_height; ++row )
+            {
+                const int sourceRow = m_height - 1 - row;
+                const std::uint8_t* rowData =
+                        m_bits.data() + static_cast<std::size_t>( sourceRow ) * static_cast<std::size_t>( m_stride );
 
-            stream.write( reinterpret_cast<const char*>( rowData ),
-                          static_cast<std::streamsize>( m_stride ) );
+                stream.write( reinterpret_cast<const char*>( rowData ),
+                              static_cast<std::streamsize>( m_stride ) );
+            }
         }
 
         return stream.good();
@@ -345,6 +355,7 @@ private:
     int m_stride = 0;
     std::vector<std::uint8_t> m_bits;
     RasterStats m_stats;
+    detail::cairo_mono::RasterScratch m_rasterScratch;
 };
 
 
