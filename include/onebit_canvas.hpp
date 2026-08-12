@@ -275,18 +275,22 @@ public:
                    bool flipVertically = false ) const
     {
         // Large write buffer. On SMB shares small writes cost two orders of magnitude more
-        // than on local disk: writing 32MB row by row took 43.0s with the default 4KB buffer
-        // versus 1.45s with 8MB (measured 2026-08-12). Locally the same comparison is
-        // 142ms versus 110ms, which is why this only ever shows up against network drives.
+        // than on local disk: writing 32MB row by row took 31-43s with the default 4KB
+        // buffer versus ~1.5s with 8MB (measured 2026-08-12); locally the same comparison
+        // is 52ms versus 8ms, which is why this only ever shows up against network drives.
         // The flipVertically path below writes one row per call, so it needs this.
-        // pubsetbuf must be called before open.
+        //
+        // MSVC ordering trap: filebuf::setbuf wraps CRT setvbuf, which requires an OPEN
+        // file — calling pubsetbuf before open fails and is silently ignored (libstdc++
+        // has the opposite rule). Call it after open and before the first write; that
+        // ordering works on both implementations.
         std::vector<char> buffer( kWriteBufferBytes );
-        std::ofstream stream;
-        stream.rdbuf()->pubsetbuf( buffer.data(), static_cast<std::streamsize>( buffer.size() ) );
-        stream.open( path, std::ios::binary );
+        std::ofstream stream( path, std::ios::binary );
 
         if( !stream.is_open() )
             return false;
+
+        stream.rdbuf()->pubsetbuf( buffer.data(), static_cast<std::streamsize>( buffer.size() ) );
 
         const bool ok = WriteBmp( stream, dpiX, dpiY, flipVertically );
         stream.close();
