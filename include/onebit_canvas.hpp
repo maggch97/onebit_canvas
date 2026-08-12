@@ -129,6 +129,9 @@ inline int clamp_floor_to_int( double value )
 class Canvas
 {
 public:
+    // Write buffer for WriteBmp( path, ... ); sized for network drives, see the comment there.
+    static constexpr std::size_t kWriteBufferBytes = 8u << 20;
+
     Canvas() = default;
 
     Canvas( int width, int height )
@@ -271,7 +274,16 @@ public:
     bool WriteBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0,
                    bool flipVertically = false ) const
     {
-        std::ofstream stream( path, std::ios::binary );
+        // Large write buffer. On SMB shares small writes cost two orders of magnitude more
+        // than on local disk: writing 32MB row by row took 43.0s with the default 4KB buffer
+        // versus 1.45s with 8MB (measured 2026-08-12). Locally the same comparison is
+        // 142ms versus 110ms, which is why this only ever shows up against network drives.
+        // The flipVertically path below writes one row per call, so it needs this.
+        // pubsetbuf must be called before open.
+        std::vector<char> buffer( kWriteBufferBytes );
+        std::ofstream stream;
+        stream.rdbuf()->pubsetbuf( buffer.data(), static_cast<std::streamsize>( buffer.size() ) );
+        stream.open( path, std::ios::binary );
 
         if( !stream.is_open() )
             return false;
