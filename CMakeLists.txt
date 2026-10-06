@@ -43,3 +43,23 @@ if(EXISTS "${ONEBIT_CANVAS_CAIRO_PREFIX}/include/cairo/cairo.h" AND
     set_tests_properties(onebit_canvas_cairo_compare_tests PROPERTIES
         ENVIRONMENT "PATH=${ONEBIT_CANVAS_CAIRO_PREFIX}/bin;$ENV{PATH}")
 endif()
+
+# The .idskbmp writer needs zstd; reuse the same vcpkg prefix (KiCad's) as the cairo comparison.
+if(EXISTS "${ONEBIT_CANVAS_CAIRO_PREFIX}/include/zstd.h" AND
+   EXISTS "${ONEBIT_CANVAS_CAIRO_PREFIX}/lib/zstd.lib")
+    add_executable(onebit_canvas_idskbmp_tests
+        tests/test_onebit_canvas_idskbmp.cpp
+    )
+
+    target_link_libraries(onebit_canvas_idskbmp_tests PRIVATE onebit_canvas
+        ${ONEBIT_CANVAS_CAIRO_PREFIX}/lib/zstd.lib
+    )
+    target_include_directories(onebit_canvas_idskbmp_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${ONEBIT_CANVAS_CAIRO_PREFIX}/include
+    )
+
+    add_test(NAME onebit_canvas_idskbmp_tests COMMAND onebit_canvas_idskbmp_tests)
+    set_tests_properties(onebit_canvas_idskbmp_tests PROPERTIES
+        ENVIRONMENT "PATH=${ONEBIT_CANVAS_CAIRO_PREFIX}/bin;$ENV{PATH}")
+endif()

@@ -141,9 +141,10 @@ inline void cairo_surface_mark_dirty( cairo_surface_t* )
 
 inline cairo_status_t cairo_surface_write_to_bmp( cairo_surface_t* surface, const std::filesystem::path& path,
                                                   int dpiX = 0, int dpiY = 0,
-                                                  bool flipVertically = false )
+                                                  bool flipVertically = false,
+                                                  onebit::BmpRowOrder rowOrder = onebit::BmpRowOrder::TopDown )
 {
-    return onebit::onebit_surface_write_to_bmp( surface, path, dpiX, dpiY, flipVertically )
+    return onebit::onebit_surface_write_to_bmp( surface, path, dpiX, dpiY, flipVertically, rowOrder )
                    ? CAIRO_STATUS_SUCCESS
                    : CAIRO_STATUS_WRITE_ERROR;
 }

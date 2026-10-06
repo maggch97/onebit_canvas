@@ -31,6 +31,14 @@ namespace onebit
 {
 
 
+// Storage order of BMP pixel rows; see detail::build_bmp_header.
+enum class BmpRowOrder
+{
+    TopDown,
+    BottomUp
+};
+
+
 struct RasterStats
 {
     std::size_t polygon_count = 0;
@@ -61,33 +69,17 @@ inline std::uint8_t last_mask( int x1 )
 }
 
 
-inline void write_le16( std::ostream& os, std::uint16_t value )
+inline void append_le16( std::vector<std::uint8_t>& out, std::uint16_t value )
 {
-    const char bytes[2] = {
-        static_cast<char>( value & 0xFFu ),
-        static_cast<char>( ( value >> 8 ) & 0xFFu )
-    };
-
-    os.write( bytes, sizeof( bytes ) );
+    out.push_back( static_cast<std::uint8_t>( value & 0xFFu ) );
+    out.push_back( static_cast<std::uint8_t>( ( value >> 8 ) & 0xFFu ) );
 }
 
 
-inline void write_le32( std::ostream& os, std::uint32_t value )
+inline void append_le32( std::vector<std::uint8_t>& out, std::uint32_t value )
 {
-    const char bytes[4] = {
-        static_cast<char>( value & 0xFFu ),
-        static_cast<char>( ( value >> 8 ) & 0xFFu ),
-        static_cast<char>( ( value >> 16 ) & 0xFFu ),
-        static_cast<char>( ( value >> 24 ) & 0xFFu )
-    };
-
-    os.write( bytes, sizeof( bytes ) );
-}
-
-
-inline void write_le32s( std::ostream& os, std::int32_t value )
-{
-    write_le32( os, static_cast<std::uint32_t>( value ) );
+    for( int shift = 0; shift < 32; shift += 8 )
+        out.push_back( static_cast<std::uint8_t>( ( value >> shift ) & 0xFFu ) );
 }
 
 
@@ -97,6 +89,56 @@ inline int dpi_to_pixels_per_meter( int dpi )
         return 0;
 
     return static_cast<int>( std::llround( static_cast<double>( dpi ) / 0.0254 ) );
+}
+
+
+// Header of a 1bpp, two-entry-palette (0 = white background, 1 = black) BMP: 14-byte file
+// header + 40-byte BITMAPINFOHEADER + 8-byte palette. TopDown stores the first image row first
+// (negative biHeight); BottomUp is the classic layout (positive biHeight, last image row first).
+// Returns false when the image does not fit the 32-bit BMP size fields.
+inline bool build_bmp_header( int width, int height, int stride, int dpiX, int dpiY, bool bottomUp,
+                              std::vector<std::uint8_t>& out )
+{
+    constexpr std::uint32_t fileHeaderSize = 14;
+    constexpr std::uint32_t infoHeaderSize = 40;
+    constexpr std::uint32_t paletteSize = 8;
+    constexpr std::uint32_t pixelDataOffset = fileHeaderSize + infoHeaderSize + paletteSize;
+
+    if( width <= 0 || height <= 0 )
+        return false;
+
+    const std::uint64_t imageSize = static_cast<std::uint64_t>( stride ) * static_cast<std::uint64_t>( height );
+    const std::uint64_t fileSize = pixelDataOffset + imageSize;
+
+    if( fileSize > std::numeric_limits<std::uint32_t>::max() )
+        return false;
+
+    const std::int32_t storedHeight = bottomUp ? static_cast<std::int32_t>( height )
+                                               : -static_cast<std::int32_t>( height );
+
+    out.clear();
+    out.reserve( pixelDataOffset );
+    append_le16( out, 0x4D42u );
+    append_le32( out, static_cast<std::uint32_t>( fileSize ) );
+    append_le16( out, 0u );
+    append_le16( out, 0u );
+    append_le32( out, pixelDataOffset );
+
+    append_le32( out, infoHeaderSize );
+    append_le32( out, static_cast<std::uint32_t>( width ) );
+    append_le32( out, static_cast<std::uint32_t>( storedHeight ) );
+    append_le16( out, 1u );
+    append_le16( out, 1u );
+    append_le32( out, 0u );
+    append_le32( out, static_cast<std::uint32_t>( imageSize ) );
+    append_le32( out, static_cast<std::uint32_t>( dpi_to_pixels_per_meter( dpiX ) ) );
+    append_le32( out, static_cast<std::uint32_t>( dpi_to_pixels_per_meter( dpiY ) ) );
+    append_le32( out, 2u );
+    append_le32( out, 2u );
+
+    const std::uint8_t palette[paletteSize] = { 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    out.insert( out.end(), palette, palette + paletteSize );
+    return true;
 }
 
 
@@ -272,13 +314,13 @@ public:
     }
 
     bool WriteBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0,
-                   bool flipVertically = false ) const
+                   bool flipVertically = false, BmpRowOrder rowOrder = BmpRowOrder::TopDown ) const
     {
         // Large write buffer. On SMB shares small writes cost two orders of magnitude more
         // than on local disk: writing 32MB row by row took 31-43s with the default 4KB
         // buffer versus ~1.5s with 8MB (measured 2026-08-12); locally the same comparison
         // is 52ms versus 8ms, which is why this only ever shows up against network drives.
-        // The flipVertically path below writes one row per call, so it needs this.
+        // The row-by-row paths below (flipVertically, BottomUp) write one row per call, so they need this.
         //
         // MSVC ordering trap: filebuf::setbuf wraps CRT setvbuf, which requires an OPEN
         // file — calling pubsetbuf before open fails and is silently ignored (libstdc++
@@ -292,77 +334,54 @@ public:
 
         stream.rdbuf()->pubsetbuf( buffer.data(), static_cast<std::streamsize>( buffer.size() ) );
 
-        const bool ok = WriteBmp( stream, dpiX, dpiY, flipVertically );
+        const bool ok = WriteBmp( stream, dpiX, dpiY, flipVertically, rowOrder );
         stream.close();
         return ok && stream.good();
     }
 
     bool WriteBmp( std::ostream& stream, int dpiX = 0, int dpiY = 0,
-                   bool flipVertically = false ) const
+                   bool flipVertically = false, BmpRowOrder rowOrder = BmpRowOrder::TopDown ) const
     {
-        if( m_width <= 0 || m_height <= 0 )
-            return false;
-
-        constexpr std::uint32_t fileHeaderSize = 14;
-        constexpr std::uint32_t infoHeaderSize = 40;
-        constexpr std::uint32_t paletteSize = 8;
-        constexpr std::uint32_t pixelDataOffset = fileHeaderSize + infoHeaderSize + paletteSize;
-
-        const std::uint64_t imageSize = static_cast<std::uint64_t>( m_stride )
-                                       * static_cast<std::uint64_t>( m_height );
-        const std::uint64_t fileSize = pixelDataOffset + imageSize;
-
-        if( fileSize > std::numeric_limits<std::uint32_t>::max() )
-            return false;
-
         if( m_height > std::numeric_limits<std::int32_t>::max() )
             return false;
 
-        detail::write_le16( stream, 0x4D42u );
-        detail::write_le32( stream, static_cast<std::uint32_t>( fileSize ) );
-        detail::write_le16( stream, 0u );
-        detail::write_le16( stream, 0u );
-        detail::write_le32( stream, pixelDataOffset );
+        std::vector<std::uint8_t> header;
 
-        detail::write_le32( stream, infoHeaderSize );
-        detail::write_le32s( stream, static_cast<std::int32_t>( m_width ) );
-        detail::write_le32s( stream, -static_cast<std::int32_t>( m_height ) );
-        detail::write_le16( stream, 1u );
-        detail::write_le16( stream, 1u );
-        detail::write_le32( stream, 0u );
-        detail::write_le32( stream, static_cast<std::uint32_t>( imageSize ) );
-        detail::write_le32s( stream, detail::dpi_to_pixels_per_meter( dpiX ) );
-        detail::write_le32s( stream, detail::dpi_to_pixels_per_meter( dpiY ) );
-        detail::write_le32( stream, 2u );
-        detail::write_le32( stream, 2u );
+        if( !detail::build_bmp_header( m_width, m_height, m_stride, dpiX, dpiY,
+                                       rowOrder == BmpRowOrder::BottomUp, header ) )
+        {
+            return false;
+        }
 
-        const char palette[8] = {
-            static_cast<char>( 0xFF ), static_cast<char>( 0xFF ), static_cast<char>( 0xFF ), 0x00,
-            0x00, 0x00, 0x00, 0x00
-        };
+        stream.write( reinterpret_cast<const char*>( header.data() ),
+                      static_cast<std::streamsize>( header.size() ) );
 
-        stream.write( palette, sizeof( palette ) );
-
-        if( !flipVertically )
+        if( !flipVertically && rowOrder == BmpRowOrder::TopDown )
         {
             // Top-down rows are stored contiguously in file order; write them in one call.
             stream.write( reinterpret_cast<const char*>( m_bits.data() ),
-                          static_cast<std::streamsize>( imageSize ) );
+                          static_cast<std::streamsize>( m_bits.size() ) );
         }
         else
         {
-            for( int row = 0; row < m_height; ++row )
+            for( int storedRow = 0; storedRow < m_height; ++storedRow )
             {
-                const int sourceRow = m_height - 1 - row;
-                const std::uint8_t* rowData =
-                        m_bits.data() + static_cast<std::size_t>( sourceRow ) * static_cast<std::size_t>( m_stride );
-
-                stream.write( reinterpret_cast<const char*>( rowData ),
+                stream.write( reinterpret_cast<const char*>( StoredRow( storedRow, flipVertically, rowOrder ) ),
                               static_cast<std::streamsize>( m_stride ) );
             }
         }
 
         return stream.good();
+    }
+
+    // Canvas row that lands at storage position storedRow of a BMP pixel array written with
+    // the given options. flipVertically mirrors the image content; rowOrder only chooses how
+    // the (possibly mirrored) image is laid out in the file. The two compose independently.
+    const std::uint8_t* StoredRow( int storedRow, bool flipVertically, BmpRowOrder rowOrder ) const
+    {
+        const int imageRow = rowOrder == BmpRowOrder::BottomUp ? m_height - 1 - storedRow : storedRow;
+        const int canvasRow = flipVertically ? m_height - 1 - imageRow : imageRow;
+        return m_bits.data() + static_cast<std::size_t>( canvasRow ) * static_cast<std::size_t>( m_stride );
     }
 
 private:
@@ -446,9 +465,9 @@ public:
     }
 
     bool WriteToBmp( const std::filesystem::path& path, int dpiX = 0, int dpiY = 0,
-                     bool flipVertically = false ) const
+                     bool flipVertically = false, BmpRowOrder rowOrder = BmpRowOrder::TopDown ) const
     {
-        return m_canvas->WriteBmp( path, dpiX, dpiY, flipVertically );
+        return m_canvas->WriteBmp( path, dpiX, dpiY, flipVertically, rowOrder );
     }
 
     const RasterStats& Stats() const noexcept
@@ -572,9 +591,10 @@ inline void onebit_paint( Context* context )
 
 inline bool onebit_surface_write_to_bmp( Surface* surface, const std::filesystem::path& path,
                                          int dpiX = 0, int dpiY = 0,
-                                         bool flipVertically = false )
+                                         bool flipVertically = false,
+                                         BmpRowOrder rowOrder = BmpRowOrder::TopDown )
 {
-    return surface != nullptr && surface->canvas.WriteBmp( path, dpiX, dpiY, flipVertically );
+    return surface != nullptr && surface->canvas.WriteBmp( path, dpiX, dpiY, flipVertically, rowOrder );
 }
 
 
@@ -728,9 +748,10 @@ inline void surface_flush( surface_t* ) noexcept {}
 
 inline bool surface_write_to_bmp( surface_t* surface, const std::filesystem::path& path,
                                   int dpiX = 0, int dpiY = 0,
-                                  bool flipVertically = false )
+                                  bool flipVertically = false,
+                                  BmpRowOrder rowOrder = BmpRowOrder::TopDown )
 {
-    return onebit_surface_write_to_bmp( surface, path, dpiX, dpiY, flipVertically );
+    return onebit_surface_write_to_bmp( surface, path, dpiX, dpiY, flipVertically, rowOrder );
 }
 
 
