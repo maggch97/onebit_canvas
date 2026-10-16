@@ -574,9 +574,17 @@ public:
             e->dxdy = floored_muldivrem( dx, FIXED_ONE, dy );
             e->dy = dy;
 
-            e->x = floored_muldivrem(
-                    static_cast<fixed_t>( ytop ) * FIXED_ONE + FIXED_FRAC_MASK / 2 - edge.line.p1.y,
-                    dx, dy );
+            // Cairo takes the first row's x at ytop + FRAC_MASK / 2, one unit above the
+            // pixel center that fixed_integer_round_down() used to decide the edge covers row
+            // ytop. When edge.top lands exactly on that center the x is taken outside the
+            // edge and extrapolated by dx / dy; for an almost horizontal edge (dy of a few
+            // units) that throws the crossing far sideways and the row's span leaks across
+            // the polygon. Never sample above the edge. This only changes edges whose top is
+            // exactly on a row center, i.e. 1 in 256 of edge tops; elsewhere it is Cairo.
+            const fixed_t sampleY = std::max(
+                    static_cast<fixed_t>( ytop ) * FIXED_ONE + FIXED_FRAC_MASK / 2, edge.top );
+
+            e->x = floored_muldivrem( sampleY - edge.line.p1.y, dx, dy );
             e->x.quo += edge.line.p1.x;
         }
 

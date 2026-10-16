@@ -7,6 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -340,6 +341,67 @@ void test_context_stats()
 }
 
 
+// An almost horizontal edge whose upper end sits exactly on a pixel-row sample center
+// (y = n + 0.5) and that only drops 1/256 pixel. The row range counts that sample center as
+// inside the edge, so the first row's x has to be taken inside the edge too. Before the fix
+// it was taken 1/256 pixel above the edge and extrapolated by dx/dy (the whole 20 pixel
+// edge here), so the span on that row leaked sideways across the polygon's bounding box.
+// Each shape is concave so that the leak lands inside the bounding box where it is visible.
+void test_shallow_edge_on_sample_center_does_not_leak()
+{
+    const double tinyDrop = 1.0 / 256.0;
+
+    // Upper end at x=20, edge runs right; the bad extrapolation pointed left.
+    const std::array<onebit::PointD, 6> leftLeak = {{
+        { 20.0, 3.5 }, { 40.0, 3.5 + tinyDrop }, { 40.0, 8.0 }, { 0.0, 8.0 }, { 0.0, 6.0 },
+        { 20.0, 6.0 }
+    }};
+
+    // Mirror image: upper end at x=40, edge runs left; the bad extrapolation pointed right.
+    const std::array<onebit::PointD, 6> rightLeak = {{
+        { 40.0, 3.5 }, { 40.0, 6.0 }, { 60.0, 6.0 }, { 60.0, 8.0 }, { 20.0, 8.0 },
+        { 20.0, 3.5 + tinyDrop }
+    }};
+
+    const std::vector<std::pair<std::string, std::vector<onebit::PointD>>> shapes = {
+        { "left", { leftLeak.begin(), leftLeak.end() } },
+        { "right", { rightLeak.begin(), rightLeak.end() } },
+    };
+
+    for( const auto& [name, shape] : shapes )
+    {
+        onebit::Canvas canvas( 64, 10 );
+        canvas.Clear( false );
+        expect_true( canvas.FillPolygon( shape.data(), shape.size(), true ),
+                     "Shallow-edge polygon fill should succeed (" + name + ")" );
+
+        for( int x = 0; x < canvas.Width(); ++x )
+        {
+            expect_true( !canvas.GetPixel( x, 3 ), "Shallow edge (" + name
+                                                       + ") must not fill row 3 at x=" + std::to_string( x ) );
+        }
+
+        // Rows 4-5: the 20 pixel wide upper part; rows 6-7: the 40 pixel wide lower part.
+        expect_equal( count_set_pixels( canvas ), 2 * 20 + 2 * 40,
+                      "Shallow edge (" + name + ") polygon area" );
+    }
+
+    // Clear polygon over ink, the case seen in production: the leaked span of a clear
+    // polygon cut a 1 pixel line through ink that has to stay set.
+    {
+        onebit::Canvas canvas( 64, 10 );
+        canvas.Clear( true );
+        canvas.FillPolygon( leftLeak, false );
+
+        for( int x = 0; x < canvas.Width(); ++x )
+        {
+            expect_true( canvas.GetPixel( x, 3 ),
+                         "Shallow clear edge must not clear row 3 at x=" + std::to_string( x ) );
+        }
+    }
+}
+
+
 void test_large_canvas_support()
 {
     onebit::Canvas canvas( 200000, 64 );
@@ -374,6 +436,7 @@ int main()
     test_clear_polygon();
     test_auto_close_matches_explicit_close();
     test_context_stats();
+    test_shallow_edge_on_sample_center_does_not_leak();
     test_large_canvas_support();
 
     if( g_failures != 0 )
